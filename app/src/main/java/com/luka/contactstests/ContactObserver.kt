@@ -16,7 +16,7 @@ class ContactObserver(
 ): ContentObserver(handler) {
 
 
-    override fun onChange(selfChange: Boolean) {
+    override fun onChange(selfChange:  Boolean) {
         super.onChange(selfChange)
 
         val deletedContacts = checkIfAnyContactsWereDeleted()
@@ -25,10 +25,18 @@ class ContactObserver(
             Log.d("ContactObserver", "Delete contact with id: $it from DB")
         }
 
-        val updatedContact = getLatestEditedContact()
-        updatedContact?.let { contactId ->
-            val contactInfo = getContactInfo(contactId)
-            println("ContactObserver - contactInfo: $contactInfo")
+        val latestUpdatedContactInfo = getLatestEditedContact()
+        latestUpdatedContactInfo?.let {
+            if (readLongFromSharedPreferences(context, "contactLastUpdatedTimestamp") < it.lastUpdatedTimestamp) {
+                saveLongToSharedPreferences(context, "contactLastUpdatedTimestamp", it.lastUpdatedTimestamp)
+                println("ContactObserver - Updates in DB required")
+                // add/update contact in DB
+                val contactInfo = getContactInfo(it.contactId)
+                println("ContactObserver - Update contact in DB: $contactInfo")
+            } else {
+                println("ContactObserver - No updates in DB required")
+            }
+
         }
 
 //        val contactChanges = getChangedContactsFromRaw()
@@ -89,7 +97,7 @@ class ContactObserver(
 
 
                 Log.d("ContactObserver", "contact that was changed/inserted/deleted: id: $contactId, isDeleted: $isDeleted")
-                getContactInfo(contactId = contactId)
+//                getContactInfo(contactId = contactId)
             }
         }
 
@@ -293,8 +301,9 @@ class ContactObserver(
     }
 
     @SuppressLint("Range")
-    fun getLatestEditedContact(): String? {
+    fun getLatestEditedContact(): LatestUpdatedContactInfo? {
         var contactId: String? = null
+        var lastUpdatedTimestamp: Long = 0
 
         val projection = arrayOf(
             ContactsContract.Contacts._ID,
@@ -313,20 +322,27 @@ class ContactObserver(
             while (it.moveToNext()) {
                 // Retrieve the contact details
                 contactId = it.getString(it.getColumnIndex(ContactsContract.Contacts._ID))
+                lastUpdatedTimestamp = it.getLong(it.getColumnIndex(ContactsContract.Contacts.CONTACT_LAST_UPDATED_TIMESTAMP))
                 val displayName = it.getString(it.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME))
-                val lastUpdatedTimestamp = it.getLong(it.getColumnIndex(ContactsContract.Contacts.CONTACT_LAST_UPDATED_TIMESTAMP))
 
-                println("ContactObserver - Lastly edited contact -> Contact ID: $contactId, Display Name: $displayName, Last Updated Timestamp: $lastUpdatedTimestamp")
+//                println("ContactObserver - Lastly edited contact -> Contact ID: $contactId, Display Name: $displayName, Last Updated Timestamp: $lastUpdatedTimestamp")
             }
         }
-        println("ContactObserver - END")
-        return contactId
+
+//        println("ContactObserver - END")
+        return contactId?.let {
+            return LatestUpdatedContactInfo(
+                contactId = it,
+                lastUpdatedTimestamp = lastUpdatedTimestamp ?: 0
+            )
+        }
     }
 
     @SuppressLint("Range")
     private fun getContactInfo(
         contactId: String
     ): ContactInfo {
+        var lastUpdatedTimestamp: String? = null
         var contactName: String? = null
         var contactPhotoUri: String? = null
         val contactPhoneNumbers = mutableListOf<PhoneInfo>()
@@ -341,7 +357,15 @@ class ContactObserver(
             ContactsContract.CommonDataKinds.Photo.PHOTO_URI,
 //            ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME
             ContactsContract.Data.DISPLAY_NAME,
-        )
+
+            ContactsContract.Data.ACCOUNT_TYPE_AND_DATA_SET,
+//            ContactsContract.Data.AGGREGATION_MODE,
+            ContactsContract.Data.CONTACT_STATUS,
+//            ContactsContract.Data.CONTENT_TYPE,
+            ContactsContract.Data.HAS_PHONE_NUMBER,
+            ContactsContract.Data.STATUS,
+
+            )
         val selection = ContactsContract.Data.CONTACT_ID + " = ? AND (" +
                 ContactsContract.Data.MIMETYPE + " = ? OR " +
                 ContactsContract.Data.MIMETYPE + " = ?" + ")"
@@ -360,23 +384,40 @@ class ContactObserver(
         )
         cursor?.use {
             while (it.moveToNext()) {
-                val id = it.getString(it.getColumnIndex(ContactsContract.Data._ID))
-                val lastUpdatedTimestamp = it.getString(it.getColumnIndex(ContactsContract.Data.CONTACT_LAST_UPDATED_TIMESTAMP)) // Timestamp je isti za sve (na nivou je celog kontakta)
+                lastUpdatedTimestamp = it.getString(it.getColumnIndex(ContactsContract.Data.CONTACT_LAST_UPDATED_TIMESTAMP)) // Timestamp je isti za sve (na nivou je celog kontakta)
                 contactName = cursor.getString(cursor.getColumnIndex(ContactsContract.Data.DISPLAY_NAME))
                 contactPhotoUri = cursor.getString(cursor.getColumnIndex(ContactsContract.CommonDataKinds.Photo.PHOTO_URI))
-                val mimeType = it.getString(it.getColumnIndex(ContactsContract.Data.MIMETYPE))
 
+                //for test
+                //ContactsContract.Data.ACCOUNT_TYPE_AND_DATA_SET,
+                //            ContactsContract.Data.AGGREGATION_MODE,
+                //            ContactsContract.Data.CONTACT_STATUS,
+                //            ContactsContract.Data.CONTENT_TYPE,
+                //            ContactsContract.Data.HAS_PHONE_NUMBER,
+                //            ContactsContract.Data.AVAILABLE,
+                //            ContactsContract.Data.INVISIBLE,
+                //            ContactsContract.Data.STATUS,
+                val accountTypeAndDataSet = it.getString(it.getColumnIndex(ContactsContract.Data.ACCOUNT_TYPE_AND_DATA_SET))
+//                val aggregationMode = it.getString(it.getColumnIndex(ContactsContract.Data.AGGREGATION_MODE))
+                val contactStatus = it.getString(it.getColumnIndex(ContactsContract.Data.CONTACT_STATUS))
+//                val contentType = it.getString(it.getColumnIndex(ContactsContract.Data.CONTENT_TYPE))
+                val hasPhoneNumber = it.getString(it.getColumnIndex(ContactsContract.Data.HAS_PHONE_NUMBER))
+                val status = it.getString(it.getColumnIndex(ContactsContract.Data.STATUS))
+
+
+                val id = it.getString(it.getColumnIndex(ContactsContract.Data._ID))
+                val mimeType = it.getString(it.getColumnIndex(ContactsContract.Data.MIMETYPE))
                 // Retrieve phone number
                 if (mimeType == ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE) {
                     val phoneNumber = it.getString(it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER))
                     contactPhoneNumbers.add(PhoneInfo(phoneId = id, phoneNumber = phoneNumber)) // raw phone number (needs to be processed)
+                    println("ContactObserver - updatedContactInfo - id:$id, accountTypeAndDataSet: $accountTypeAndDataSet, contactStatus:$contactStatus, hasPhoneNumber:$hasPhoneNumber, status:$status")
                 }
                 // Retrieve email address
                 if (mimeType == ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE) {
                     val emailAddress = it.getString(it.getColumnIndex(ContactsContract.CommonDataKinds.Email.ADDRESS))
                     contactEmails.add(EmailInfo(emailId = id, emailAddress = emailAddress))
                 }
-
             }
         }
 
@@ -385,7 +426,8 @@ class ContactObserver(
             name = contactName ?: "",
             avatarUri = contactPhotoUri ?: "",
             phoneNumbers = contactPhoneNumbers,
-            emails = contactEmails
+            emails = contactEmails,
+            lastUpdatedTimestamp = lastUpdatedTimestamp ?: ""
         )
     }
 
@@ -396,12 +438,18 @@ data class ContactChanges(
     val deletedContactIds: List<String> = listOf(),
 )
 
+data class LatestUpdatedContactInfo(
+    val contactId: String,
+    val lastUpdatedTimestamp: Long
+)
+
 data class ContactInfo(
     val contactId: String,
     val name: String,
     val avatarUri: String,
     val phoneNumbers: List<PhoneInfo>,
     val emails: List<EmailInfo>,
+    val lastUpdatedTimestamp: String,
 )
 data class PhoneInfo(
     val phoneId: String,
